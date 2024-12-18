@@ -146,7 +146,7 @@ The `SsdpClient` class relies on the following classes:
 
 ## Discussion
 
-The used primitives and .gradle integration has been foreseen to work seamlessly in Android environment. But you may use the library in any other projects.
+The used primitives and .gradle integration have been foreseen to work seamlessly in Android environment. But you may adapt and use the library in any other projects.
 
 ## License
 
