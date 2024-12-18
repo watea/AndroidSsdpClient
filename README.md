@@ -144,6 +144,10 @@ The `SsdpClient` class relies on the following classes:
 - **`SsdpResponse`:** Represents an SSDP response or notification.
 - **`SsdpService`:** Encapsulates details about a discovered or announced service.
 
+## Discussion
+
+The used primitives and .gradle integration has been foreseen to work seamlessly in Android environment. But you may use the library in any other projects.
+
 ## License
 
 MIT
