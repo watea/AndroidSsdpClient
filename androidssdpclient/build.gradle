@@ -4,7 +4,7 @@ plugins {
 }
 
 android {
-    namespace 'com.watea.candidhttpserver'
+    namespace 'com.watea.androidssdpclient'
     compileSdk 34
 
     defaultConfig {
