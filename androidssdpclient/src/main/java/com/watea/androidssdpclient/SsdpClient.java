@@ -177,7 +177,7 @@ public class SsdpClient {
         datagramSocket.receive(receivePacket);
         final SsdpResponse ssdpResponse = parse(receivePacket);
         if (ssdpResponse == null) {
-          Log.e(LOG_TAG, "receive: unable to parse response");
+          Log.d(LOG_TAG, "receive: unable to parse response");
         } else {
           final SsdpService ssdpService = new SsdpService(ssdpResponse);
           if (ssdpService.getType() == SsdpResponse.Type.DISCOVERY_RESPONSE) {
