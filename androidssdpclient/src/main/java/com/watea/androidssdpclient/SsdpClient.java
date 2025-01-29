@@ -227,6 +227,7 @@ public class SsdpClient {
           SsdpResponse.Type.PRESENCE_ANNOUNCEMENT :
           null;
     if (type == null) {
+      Log.d(LOG_TAG, "parse: failed to parse first line => " + firstLine);
       return null;
     }
     // Let's parse our headers
