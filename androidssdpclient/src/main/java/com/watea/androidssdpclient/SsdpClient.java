@@ -203,7 +203,7 @@ public class SsdpClient {
       } catch (IOException iOException) {
         if (iOException instanceof SocketTimeoutException) {
           Log.d(LOG_TAG, "receive: timeout");
-        } else {
+        } else if (isRunning) {
           Log.e(LOG_TAG, "receive: failed!");
         }
       }
