@@ -107,7 +107,7 @@ public class SsdpClient {
 
   // Network shall be available (implementation dependant)
   public void start() {
-    Log.d(LOG_TAG, "start: entering");
+    Log.d(LOG_TAG, "start");
     try {
       // Search socket and timeout
       searchSocket = new MulticastSocket();
@@ -139,7 +139,7 @@ public class SsdpClient {
   }
 
   public void stop() {
-    Log.d(LOG_TAG, "stop: entering");
+    Log.d(LOG_TAG, "stop");
     isRunning = false;
     if (searchSocket != null) {
       searchSocket.close();
@@ -158,6 +158,7 @@ public class SsdpClient {
   }
 
   public void search() {
+    Log.d(LOG_TAG, "search");
     if ((searchSocket != null) && !searchSocket.isClosed()) {
       try {
         final byte[] sendData = (SEARCH_MESSAGE + device + S_CRLF + S_CRLF).getBytes();
@@ -170,6 +171,7 @@ public class SsdpClient {
   }
 
   private void receive(@NonNull DatagramSocket datagramSocket) {
+    Log.d(LOG_TAG, "receive");
     final byte[] receiveData = new byte[1024];
     final DatagramPacket receivePacket = new DatagramPacket(receiveData, receiveData.length);
     while (isRunning) {
@@ -202,14 +204,16 @@ public class SsdpClient {
         if (iOException instanceof SocketTimeoutException) {
           Log.d(LOG_TAG, "receive: timeout");
         } else {
-          Log.e(LOG_TAG, "receive:", iOException);
+          Log.e(LOG_TAG, "receive: failed!");
         }
       }
     }
+    Log.d(LOG_TAG, "receive: exit");
   }
 
   @Nullable
   private SsdpResponse parse(@NonNull DatagramPacket datagramPacket) {
+    Log.d(LOG_TAG, "parse");
     final byte[] data = datagramPacket.getData();
     // Find position of the last header data
     int endOfHeaders = findEndOfHeaders(data);
