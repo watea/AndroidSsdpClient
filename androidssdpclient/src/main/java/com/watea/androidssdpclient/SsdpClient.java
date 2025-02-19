@@ -60,7 +60,7 @@ public class SsdpClient {
   private static final String MULTICAST_ADDRESS = "239.255.255.250";
   private static final String WLAN = "wlan0";
   private static final int SSDP_PORT = 1900;
-  private static final int SEARCH_DELAY = 500; // ms
+  private static final int SEARCH_DELAY = 2000; // ms
   private static final int SEARCH_REPEAT = 3;
   private static final int MX = 3; // s
   private static final int SEARCH_TTL = 2; // UPnP spec
