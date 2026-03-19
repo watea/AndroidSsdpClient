@@ -74,21 +74,24 @@ public class SsdpClient {
       "MX: " + MX + S_CRLF +
       "ST: ";
   private static final Pattern CACHE_CONTROL_PATTERN = Pattern.compile("max-age *= *([0-9]+).*");
-  // Date format for expires headers
-  private static final SimpleDateFormat DATE_HEADER_FORMAT = new SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss zzz", Locale.US);
+  // Date format for expires headers — ThreadLocal because SimpleDateFormat is not thread-safe
+  private static final ThreadLocal<SimpleDateFormat> DATE_HEADER_FORMAT =
+    ThreadLocal.withInitial(() -> new SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss zzz", Locale.US));
   private static final Pattern SEARCH_REQUEST_LINE_PATTERN = Pattern.compile("^HTTP/1\\.1 [0-9]+ .*");
   private static final Pattern SERVICE_ANNOUNCEMENT_LINE_PATTERN = Pattern.compile("NOTIFY \\* HTTP/1\\.1");
   private static final Pattern HEADER_PATTERN = Pattern.compile("(.*?):(.*)$");
   private static final String CACHE_CONTROL = "CACHE-CONTROL";
   private static final String EXPIRES = "EXPIRES";
-  private static final byte[] B_CRLF = S_CRLF.getBytes(UTF_8);
+  // Double CRLF sequence marking the end of HTTP headers
+  private static final byte[] DOUBLE_CRLF = (S_CRLF + S_CRLF).getBytes(UTF_8);
   @NonNull
   private final String device;
   @NonNull
   private final Listener listener;
   // Cache
   private final List<SsdpService> ssdpServices = new Vector<>(); // Threadsafe List implementation
-  private boolean isRunning;
+  // volatile ensures visibility of isRunning across threads
+  private volatile boolean isRunning;
   @Nullable
   private MulticastSocket searchSocket = null; // Multicast socket used here only for TTL, otherwise DatagramSocket could be enough
   @Nullable
@@ -126,34 +129,22 @@ public class SsdpClient {
       new Thread(() -> receive(searchSocket)).start();
       new Thread(() -> receive(listenSocket)).start();
       // Now we can search
-      final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
-      for (int i = 0; i < SEARCH_REPEAT; i++) {
-        scheduler.schedule(this::search, i * SEARCH_DELAY, TimeUnit.MILLISECONDS);
+      try (final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1)) {
+        for (int i = 0; i < SEARCH_REPEAT; i++) {
+          scheduler.schedule(this::search, i * SEARCH_DELAY, TimeUnit.MILLISECONDS);
+        }
       }
-      scheduler.shutdown();
     } catch (Exception exception) {
       Log.e(LOG_TAG, "start: failed!", exception);
-      stop();
+      // Close sockets only — onFatalError is the relevant callback here, not onStop
+      closeSockets();
       listener.onFatalError();
     }
   }
 
   public void stop() {
     Log.d(LOG_TAG, "stop");
-    isRunning = false;
-    if (searchSocket != null) {
-      searchSocket.close();
-    }
-    if (listenSocket != null) {
-      if (networkInterface != null) {
-        try {
-          listenSocket.leaveGroup(new InetSocketAddress(MULTICAST_ADDRESS, SSDP_PORT), networkInterface);
-        } catch (IOException iOException) {
-          Log.e(LOG_TAG, "stop: unable to leave group!", iOException);
-        }
-      }
-      listenSocket.close();
-    }
+    closeSockets();
     listener.onStop();
   }
 
@@ -161,7 +152,8 @@ public class SsdpClient {
     Log.d(LOG_TAG, "search");
     if ((searchSocket != null) && !searchSocket.isClosed()) {
       try {
-        final byte[] sendData = (SEARCH_MESSAGE + device + S_CRLF + S_CRLF).getBytes();
+        // Explicit UTF-8 charset to avoid platform-default encoding
+        final byte[] sendData = (SEARCH_MESSAGE + device + S_CRLF + S_CRLF).getBytes(UTF_8);
         final DatagramPacket packet = new DatagramPacket(sendData, sendData.length, InetAddress.getByName(MULTICAST_ADDRESS), SSDP_PORT);
         searchSocket.send(packet);
       } catch (IOException iOException) {
@@ -258,13 +250,17 @@ public class SsdpClient {
     if (cacheControlHeader != null) {
       final Matcher m = CACHE_CONTROL_PATTERN.matcher(cacheControlHeader);
       if (m.matches()) {
-        return new Date().getTime() + Long.parseLong(m.group(1)) * 1000L;
+        final String time = m.group(1);
+        if (time != null) {
+          return new Date().getTime() + Long.parseLong(time) * 1000L;
+        }
       }
     }
     final String expires = headers.get(EXPIRES);
     if (expires != null) {
       try {
-        final Date date = DATE_HEADER_FORMAT.parse(expires);
+        final SimpleDateFormat simpleDateFormat = DATE_HEADER_FORMAT.get();
+        final Date date = (simpleDateFormat == null) ? null : simpleDateFormat.parse(expires);
         return (date == null) ? 0 : date.getTime();
       } catch (ParseException parseException) {
         Log.d(LOG_TAG, "parseCacheHeader: failed to parse expires header");
@@ -274,14 +270,32 @@ public class SsdpClient {
     return 0;
   }
 
-  // Find the index matching the end of the header data
+  // Find the index matching the end of the header data (\r\n\r\n sequence)
   private int findEndOfHeaders(@NonNull byte[] data) {
-    for (int i = 0; i < data.length - 3; i++) {
-      if (Arrays.equals(B_CRLF, Arrays.copyOfRange(data, i, i + 4))) {
+    for (int i = 0; i <= data.length - DOUBLE_CRLF.length; i++) {
+      if (Arrays.equals(DOUBLE_CRLF, Arrays.copyOfRange(data, i, i + DOUBLE_CRLF.length))) {
         return i; // Headers finish here
       }
     }
     return -1;
+  }
+
+  // Close sockets without triggering any listener callback
+  private void closeSockets() {
+    isRunning = false;
+    if (searchSocket != null) {
+      searchSocket.close();
+    }
+    if (listenSocket != null) {
+      if (networkInterface != null) {
+        try {
+          listenSocket.leaveGroup(new InetSocketAddress(MULTICAST_ADDRESS, SSDP_PORT), networkInterface);
+        } catch (IOException iOException) {
+          Log.e(LOG_TAG, "closeSockets: unable to leave group!", iOException);
+        }
+      }
+      listenSocket.close();
+    }
   }
 
   public boolean isStarted() {
