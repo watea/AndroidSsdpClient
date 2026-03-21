@@ -129,11 +129,12 @@ public class SsdpClient {
       new Thread(() -> receive(searchSocket)).start();
       new Thread(() -> receive(listenSocket)).start();
       // Now we can search
-      try (final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1)) {
-        for (int i = 0; i < SEARCH_REPEAT; i++) {
-          scheduler.schedule(this::search, i * SEARCH_DELAY, TimeUnit.MILLISECONDS);
-        }
+      // noinspection resource
+      final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
+      for (int i = 0; i < SEARCH_REPEAT; i++) {
+        scheduler.schedule(this::search, (long) i * SEARCH_DELAY, TimeUnit.MILLISECONDS);
       }
+      scheduler.shutdown();
     } catch (Exception exception) {
       Log.e(LOG_TAG, "start: failed!", exception);
       // Close sockets only — onFatalError is the relevant callback here, not onStop
@@ -160,6 +161,10 @@ public class SsdpClient {
         Log.e(LOG_TAG, "SSDP search failed!", iOException);
       }
     }
+  }
+
+  public boolean isStarted() {
+    return isRunning;
   }
 
   private void receive(@NonNull DatagramSocket datagramSocket) {
@@ -296,10 +301,6 @@ public class SsdpClient {
       }
       listenSocket.close();
     }
-  }
-
-  public boolean isStarted() {
-    return isRunning;
   }
 
   public interface Listener {
