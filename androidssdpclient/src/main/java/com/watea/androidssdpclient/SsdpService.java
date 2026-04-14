@@ -56,6 +56,28 @@ public class SsdpService {
     this.originalResponse = response;
   }
 
+  // Private constructor used to synthesize a service with a given status (e.g. EXPIRED)
+  private SsdpService(
+    @Nullable String serialNumber,
+    @Nullable String serviceType,
+    @Nullable String location,
+    @NonNull Status status,
+    @NonNull InetAddress remoteIp,
+    @NonNull SsdpResponse originalResponse) {
+    this.serialNumber = serialNumber;
+    this.serviceType = serviceType;
+    this.location = location;
+    this.status = status;
+    this.remoteIp = remoteIp;
+    this.originalResponse = originalResponse;
+  }
+
+  // Returns a synthetic copy of this service with EXPIRED status
+  @NonNull
+  public SsdpService asExpired() {
+    return new SsdpService(serialNumber, serviceType, location, Status.EXPIRED, remoteIp, originalResponse);
+  }
+
   @Nullable
   public String getServiceType() {
     return serviceType;
@@ -126,7 +148,7 @@ public class SsdpService {
   }
 
   public enum Status {
-    NONE, ALIVE, BYEBYE, UPDATE;
+    NONE, ALIVE, BYEBYE, UPDATE, EXPIRED;
 
     // Parse NTS or ST header into a Status
     @NonNull

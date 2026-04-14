@@ -52,6 +52,7 @@ import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 @SuppressWarnings("unused")
 public class SsdpClient {
@@ -65,6 +66,7 @@ public class SsdpClient {
   private static final int MX = 3; // s
   private static final int SEARCH_TTL = 2; // UPnP spec
   private static final int MARGIN = 100; // ms
+  private static final int EXPIRY_CHECK_PERIOD = 30; // s — period between expiry sweeps
   // CRLF
   private static final String S_CRLF = "\r\n";
   private static final String SEARCH_MESSAGE =
@@ -98,6 +100,8 @@ public class SsdpClient {
   private MulticastSocket listenSocket = null;
   @Nullable
   private NetworkInterface networkInterface = null;
+  @Nullable
+  private ScheduledExecutorService expiryScheduler = null;
 
   public SsdpClient(@Nullable String device, @NonNull Listener listener) {
     this.device = (device == null) ? ALL_DEVICES : device;
@@ -128,6 +132,9 @@ public class SsdpClient {
       ssdpServices.clear();
       new Thread(() -> receive(searchSocket)).start();
       new Thread(() -> receive(listenSocket)).start();
+      // Periodic sweep to detect silently disappeared services
+      expiryScheduler = Executors.newScheduledThreadPool(1);
+      expiryScheduler.scheduleWithFixedDelay(this::checkExpiredServices, EXPIRY_CHECK_PERIOD, EXPIRY_CHECK_PERIOD, TimeUnit.SECONDS);
       // Now we can search
       // noinspection resource
       final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
@@ -165,6 +172,17 @@ public class SsdpClient {
 
   public boolean isStarted() {
     return isRunning;
+  }
+
+  // Remove services that have not renewed their presence within their max-age window,
+  // and notify the listener for each one with a synthetic EXPIRED announcement
+  private void checkExpiredServices() {
+    Log.d(LOG_TAG, "checkExpiredServices");
+    final List<SsdpService> expired = ssdpServices.stream()
+      .filter(SsdpService::isExpired)
+      .collect(Collectors.toList());
+    ssdpServices.removeAll(expired);
+    expired.forEach(service -> listener.onServiceAnnouncement(service.asExpired()));
   }
 
   private void receive(@NonNull DatagramSocket datagramSocket) {
@@ -285,9 +303,13 @@ public class SsdpClient {
     return -1;
   }
 
-  // Close sockets without triggering any listener callback
+  // Close sockets and stop expiry scheduler without triggering any listener callback
   private void closeSockets() {
     isRunning = false;
+    if (expiryScheduler != null) {
+      expiryScheduler.shutdownNow();
+      expiryScheduler = null;
+    }
     if (searchSocket != null) {
       searchSocket.close();
     }
