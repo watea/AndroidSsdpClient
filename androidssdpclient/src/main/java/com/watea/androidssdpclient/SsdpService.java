@@ -112,16 +112,13 @@ public class SsdpService {
     if (this == o) return true;
     if ((o == null) || (getClass() != o.getClass())) return false;
     final SsdpService that = (SsdpService) o;
-    return Objects.equals(serialNumber, that.serialNumber) &&
-      Objects.equals(serviceType, that.serviceType) &&
-      (status == that.status);
+    return Objects.equals(serialNumber, that.serialNumber) && Objects.equals(serviceType, that.serviceType);
   }
 
   @Override
   public int hashCode() {
     int result = (serialNumber == null) ? 0 : serialNumber.hashCode();
     result = 31 * result + ((serviceType == null) ? 0 : serviceType.hashCode());
-    result = 31 * result + status.hashCode();
     return result;
   }
 

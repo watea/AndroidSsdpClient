@@ -38,20 +38,13 @@ import java.net.InetSocketAddress;
 import java.net.MulticastSocket;
 import java.net.NetworkInterface;
 import java.net.SocketTimeoutException;
-import java.text.ParseException;
-import java.text.SimpleDateFormat;
-import java.util.Arrays;
-import java.util.Date;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Vector;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.Optional;
+import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 @SuppressWarnings("unused")
@@ -67,7 +60,6 @@ public class SsdpClient {
   private static final int SEARCH_TTL = 2; // UPnP spec
   private static final int MARGIN = 100; // ms
   private static final int EXPIRY_CHECK_PERIOD = 30; // s — period between expiry sweeps
-  // CRLF
   private static final String S_CRLF = "\r\n";
   private static final String SEARCH_MESSAGE =
     "M-SEARCH * HTTP/1.1" + S_CRLF +
@@ -75,23 +67,13 @@ public class SsdpClient {
       "MAN: \"ssdp:discover\"" + S_CRLF +
       "MX: " + MX + S_CRLF +
       "ST: ";
-  private static final Pattern CACHE_CONTROL_PATTERN = Pattern.compile("max-age *= *([0-9]+).*");
-  // Date format for expires headers — ThreadLocal because SimpleDateFormat is not thread-safe
-  private static final ThreadLocal<SimpleDateFormat> DATE_HEADER_FORMAT =
-    ThreadLocal.withInitial(() -> new SimpleDateFormat("EEE, dd MMM yyyy HH:mm:ss zzz", Locale.US));
-  private static final Pattern SEARCH_REQUEST_LINE_PATTERN = Pattern.compile("^HTTP/1\\.1 [0-9]+ .*");
-  private static final Pattern SERVICE_ANNOUNCEMENT_LINE_PATTERN = Pattern.compile("NOTIFY \\* HTTP/1\\.1");
-  private static final Pattern HEADER_PATTERN = Pattern.compile("(.*?):(.*)$");
-  private static final String CACHE_CONTROL = "CACHE-CONTROL";
-  private static final String EXPIRES = "EXPIRES";
-  // Double CRLF sequence marking the end of HTTP headers
-  private static final byte[] DOUBLE_CRLF = (S_CRLF + S_CRLF).getBytes(UTF_8);
+
   @NonNull
   private final String device;
   @NonNull
   private final Listener listener;
   // Cache
-  private final List<SsdpService> ssdpServices = new Vector<>(); // Threadsafe List implementation
+  private final Set<SsdpService> ssdpServices = Collections.synchronizedSet(new HashSet<>());
   // volatile ensures visibility of isRunning across threads
   private volatile boolean isRunning;
   @Nullable
@@ -178,10 +160,13 @@ public class SsdpClient {
   // and notify the listener for each one with a synthetic EXPIRED announcement
   private void checkExpiredServices() {
     Log.d(LOG_TAG, "checkExpiredServices");
-    final List<SsdpService> expired = ssdpServices.stream()
-      .filter(SsdpService::isExpired)
-      .collect(Collectors.toList());
-    ssdpServices.removeAll(expired);
+    final Set<SsdpService> expired;
+    synchronized (ssdpServices) {
+      expired = ssdpServices.stream()
+        .filter(SsdpService::isExpired)
+        .collect(Collectors.toCollection(HashSet::new));
+      ssdpServices.removeAll(expired);
+    }
     expired.forEach(service -> listener.onServiceAnnouncement(service.asExpired()));
   }
 
@@ -192,29 +177,46 @@ public class SsdpClient {
     while (isRunning) {
       try {
         datagramSocket.receive(receivePacket);
-        final SsdpResponse ssdpResponse = parse(receivePacket);
-        if (ssdpResponse == null) {
-          Log.d(LOG_TAG, "receive: unable to parse response");
-        } else {
-          final SsdpService ssdpService = new SsdpService(ssdpResponse);
-          if (ssdpService.getType() == SsdpResponse.Type.DISCOVERY_RESPONSE) {
-            // Handle cache
-            final int index = ssdpServices.indexOf(ssdpService);
-            boolean isNew = false;
-            if (index < 0) {
-              ssdpServices.add(ssdpService);
-              isNew = true;
-            } else if (ssdpServices.get(index).isExpired()) {
-              ssdpServices.set(index, ssdpService);
-              isNew = true;
+        final SsdpService ssdpService = new SsdpService(SsdpResponse.from(receivePacket));
+        if (ssdpService.getType() == SsdpResponse.Type.DISCOVERY_RESPONSE) {
+          // Handle cache
+          final Optional<SsdpService> existing;
+          synchronized (ssdpServices) {
+            existing = ssdpServices.stream().filter(ssdpService::equals).findFirst();
+          }
+          if (existing.isEmpty()) {
+            ssdpServices.add(ssdpService);
+            listener.onServiceDiscovered(ssdpService);
+          } else {
+            final boolean wasExpired = existing.get().isExpired();
+            // Always refresh expiry on re-discovery
+            ssdpServices.remove(ssdpService);
+            ssdpServices.add(ssdpService);
+            if (wasExpired) {
+              listener.onServiceDiscovered(ssdpService);
             }
-            if (isNew) {
+          }
+        } else {
+          // Sync cache on ssdp:byebye / ssdp:alive announcements
+          final SsdpService.Status status = ssdpService.getStatus();
+          if (status == SsdpService.Status.ALIVE) {
+            if (ssdpServices.contains(ssdpService)) {
+              ssdpServices.remove(ssdpService);
+              ssdpServices.add(ssdpService);
+              listener.onServiceAnnouncement(ssdpService);
+            } else {
+              ssdpServices.add(ssdpService);
               listener.onServiceDiscovered(ssdpService);
             }
           } else {
+            if (status == SsdpService.Status.BYEBYE) {
+              ssdpServices.remove(ssdpService);
+            }
             listener.onServiceAnnouncement(ssdpService);
           }
         }
+      } catch (IllegalArgumentException illegalArgumentException) {
+        Log.d(LOG_TAG, "receive: unable to parse response");
       } catch (IOException iOException) {
         if (iOException instanceof SocketTimeoutException) {
           Log.d(LOG_TAG, "receive: timeout");
@@ -224,83 +226,6 @@ public class SsdpClient {
       }
     }
     Log.d(LOG_TAG, "receive: exit");
-  }
-
-  @Nullable
-  private SsdpResponse parse(@NonNull DatagramPacket datagramPacket) {
-    Log.d(LOG_TAG, "parse");
-    final byte[] data = datagramPacket.getData();
-    // Find position of the last header data
-    int endOfHeaders = findEndOfHeaders(data);
-    if (endOfHeaders == -1) {
-      endOfHeaders = datagramPacket.getLength();
-    }
-    // Retrieve all header lines
-    final List<String> headerLines = Arrays.asList(new String(Arrays.copyOfRange(data, 0, endOfHeaders)).split(S_CRLF));
-    final String firstLine = headerLines.get(0);
-    // Determine type of message
-    final SsdpResponse.Type type =
-      SEARCH_REQUEST_LINE_PATTERN.matcher(firstLine).matches() ?
-        SsdpResponse.Type.DISCOVERY_RESPONSE :
-        SERVICE_ANNOUNCEMENT_LINE_PATTERN.matcher(firstLine).matches() ?
-          SsdpResponse.Type.PRESENCE_ANNOUNCEMENT :
-          null;
-    if (type == null) {
-      Log.d(LOG_TAG, "parse: failed to parse first line => " + firstLine);
-      return null;
-    }
-    // Let's parse our headers
-    final Map<String, String> headers = new HashMap<>();
-    headerLines.stream().map(HEADER_PATTERN::matcher).filter(Matcher::matches).forEach(matcher -> {
-      final String key = matcher.group(1);
-      final String value = matcher.group(2);
-      if ((key != null) && (value != null)) {
-        headers.put(key.toUpperCase().trim(), value.trim());
-      }
-    });
-    // Determine expiry depending on the presence of cache-control or expires headers
-    final long expiry = parseCacheHeader(headers);
-    // Let's see if we have a body.
-    // If we do, let's copy the byte array and put it into the response for the user to get.
-    final int endOfBody = datagramPacket.getLength();
-    final byte[] body = (endOfBody > endOfHeaders + 4) ? Arrays.copyOfRange(data, endOfHeaders + 4, endOfBody) : null;
-    return new SsdpResponse(type, headers, body, expiry, datagramPacket.getAddress());
-  }
-
-  // Parse both Cache-Control and Expires headers to determine if there is any caching strategy requested by service
-  private long parseCacheHeader(@NonNull Map<String, String> headers) {
-    final String cacheControlHeader = headers.get(CACHE_CONTROL);
-    if (cacheControlHeader != null) {
-      final Matcher m = CACHE_CONTROL_PATTERN.matcher(cacheControlHeader);
-      if (m.matches()) {
-        final String time = m.group(1);
-        if (time != null) {
-          return new Date().getTime() + Long.parseLong(time) * 1000L;
-        }
-      }
-    }
-    final String expires = headers.get(EXPIRES);
-    if (expires != null) {
-      try {
-        final SimpleDateFormat simpleDateFormat = DATE_HEADER_FORMAT.get();
-        final Date date = (simpleDateFormat == null) ? null : simpleDateFormat.parse(expires);
-        return (date == null) ? 0 : date.getTime();
-      } catch (ParseException parseException) {
-        Log.d(LOG_TAG, "parseCacheHeader: failed to parse expires header");
-      }
-    }
-    // No result, no expiry strategy
-    return 0;
-  }
-
-  // Find the index matching the end of the header data (\r\n\r\n sequence)
-  private int findEndOfHeaders(@NonNull byte[] data) {
-    for (int i = 0; i <= data.length - DOUBLE_CRLF.length; i++) {
-      if (Arrays.equals(DOUBLE_CRLF, Arrays.copyOfRange(data, i, i + DOUBLE_CRLF.length))) {
-        return i; // Headers finish here
-      }
-    }
-    return -1;
   }
 
   // Close sockets and stop expiry scheduler without triggering any listener callback
