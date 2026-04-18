@@ -17,5 +17,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "AndroidSsdpClient"
+rootProject.name = 'AndroidSsdpClient'
 include ':androidssdpclient'
