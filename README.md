@@ -71,7 +71,7 @@ import com.watea.androidssdpclient.SsdpClient;
 public class MySsdpClient {
     private SsdpClient client;
 
-    public void startClient() {
+    public void startClient(@NonNull Context context) {
         SsdpClient.Listener listener = new SsdpClient.Listener() {
             @Override
             public void onServiceDiscovered(@NonNull SsdpService service) {
@@ -94,7 +94,7 @@ public class MySsdpClient {
             }
         };
 
-        client = new SsdpClient(listener);
+        client = new SsdpClient(context, listener);
         client.start();
     }
 
@@ -136,6 +136,16 @@ Implement the `SsdpClient.Listener` interface to handle SSDP events. For example
 - `search()`: Sends a single M-SEARCH request to discover devices.
 - `stop()`: Stops the client and releases resources.
 - `isStarted()`: Checks if the client is running.
+
+### Permissions
+
+Add the following permission to your application's `AndroidManifest.xml`:
+
+```xml
+<uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
+```
+
+This is required for `SsdpClient` to acquire the `WifiManager.MulticastLock` internally, which prevents Android from filtering multicast packets in the background.
 
 ### Dependencies
 

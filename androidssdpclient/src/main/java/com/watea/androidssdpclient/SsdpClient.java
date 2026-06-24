@@ -25,6 +25,8 @@ package com.watea.androidssdpclient;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
 
+import android.content.Context;
+import android.net.wifi.WifiManager;
 import android.util.Log;
 
 import androidx.annotation.NonNull;
@@ -67,11 +69,12 @@ public class SsdpClient {
       "MAN: \"ssdp:discover\"" + S_CRLF +
       "MX: " + MX + S_CRLF +
       "ST: ";
-
   @NonNull
   private final String device;
   @NonNull
   private final Listener listener;
+  @NonNull
+  private final WifiManager.MulticastLock multicastLock;
   // Cache
   private final Set<SsdpService> ssdpServices = Collections.synchronizedSet(new HashSet<>());
   // volatile ensures visibility of isRunning across threads
@@ -85,13 +88,14 @@ public class SsdpClient {
   @Nullable
   private ScheduledExecutorService expiryScheduler = null;
 
-  public SsdpClient(@Nullable String device, @NonNull Listener listener) {
+  public SsdpClient(@NonNull Context context, @Nullable String device, @NonNull Listener listener) {
     this.device = (device == null) ? ALL_DEVICES : device;
     this.listener = listener;
+    this.multicastLock = ((WifiManager) context.getApplicationContext().getSystemService(Context.WIFI_SERVICE)).createMulticastLock(LOG_TAG);
   }
 
-  public SsdpClient(@NonNull Listener listener) {
-    this(null, listener);
+  public SsdpClient(@NonNull Context context, @NonNull Listener listener) {
+    this(context, null, listener);
   }
 
   // Network shall be available (implementation dependant)
@@ -110,6 +114,7 @@ public class SsdpClient {
       networkInterface = NetworkInterface.getByName(WLAN);
       listenSocket.joinGroup(new InetSocketAddress(MULTICAST_ADDRESS, SSDP_PORT), networkInterface);
       // Receive on both ports unicast and multicast responses
+      multicastLock.acquire();
       isRunning = true;
       ssdpServices.clear();
       new Thread(() -> receive(searchSocket)).start();
@@ -231,6 +236,9 @@ public class SsdpClient {
   // Close sockets and stop expiry scheduler without triggering any listener callback
   private void closeSockets() {
     isRunning = false;
+    if (multicastLock.isHeld()) {
+      multicastLock.release();
+    }
     if (expiryScheduler != null) {
       expiryScheduler.shutdownNow();
       expiryScheduler = null;
