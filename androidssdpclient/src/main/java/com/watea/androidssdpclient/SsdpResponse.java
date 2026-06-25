@@ -57,7 +57,6 @@ public class SsdpResponse {
   private static final Pattern HEADER_PATTERN = Pattern.compile("(.*?):(.*)$");
   private static final String CACHE_CONTROL = "CACHE-CONTROL";
   private static final String EXPIRES = "EXPIRES";
-
   @NonNull
   private final Map<String, String> headers;
   @Nullable
