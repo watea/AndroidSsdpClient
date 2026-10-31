@@ -42,7 +42,6 @@ import java.net.NetworkInterface;
 import java.net.SocketTimeoutException;
 import java.util.Collections;
 import java.util.HashSet;
-import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -50,7 +49,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
 @SuppressWarnings("unused")
-public class SsdpClient {
+public final class SsdpClient {
   private static final String ALL_DEVICES = "ssdp:all";
   private static final String LOG_TAG = SsdpClient.class.getSimpleName();
   private static final String MULTICAST_ADDRESS = "239.255.255.250";
@@ -62,6 +61,7 @@ public class SsdpClient {
   private static final int SEARCH_TTL = 2; // UPnP spec
   private static final int MARGIN = 100; // ms
   private static final int EXPIRY_CHECK_PERIOD = 30; // s — period between expiry sweeps
+  private static final int RECEIVE_BUFFER_SIZE = 8192; // bytes
   private static final String S_CRLF = "\r\n";
   private static final String SEARCH_MESSAGE =
     "M-SEARCH * HTTP/1.1" + S_CRLF +
@@ -92,6 +92,8 @@ public class SsdpClient {
     this.device = (device == null) ? ALL_DEVICES : device;
     this.listener = listener;
     this.multicastLock = ((WifiManager) context.getApplicationContext().getSystemService(Context.WIFI_SERVICE)).createMulticastLock(LOG_TAG);
+    // Single acquire/release per start/stop cycle
+    this.multicastLock.setReferenceCounted(false);
   }
 
   public SsdpClient(@NonNull Context context, @NonNull Listener listener) {
@@ -101,6 +103,10 @@ public class SsdpClient {
   // Network shall be available (implementation dependant)
   public void start() {
     Log.d(LOG_TAG, "start");
+    if (isRunning) {
+      Log.d(LOG_TAG, "start: already started");
+      return;
+    }
     try {
       // Search socket and timeout
       searchSocket = new MulticastSocket();
@@ -139,6 +145,10 @@ public class SsdpClient {
 
   public void stop() {
     Log.d(LOG_TAG, "stop");
+    if (!isRunning) {
+      Log.d(LOG_TAG, "stop: not started");
+      return;
+    }
     closeSockets();
     listener.onStop();
   }
@@ -177,48 +187,23 @@ public class SsdpClient {
 
   private void receive(@NonNull DatagramSocket datagramSocket) {
     Log.d(LOG_TAG, "receive");
-    final byte[] receiveData = new byte[1024];
+    final byte[] receiveData = new byte[RECEIVE_BUFFER_SIZE];
     final DatagramPacket receivePacket = new DatagramPacket(receiveData, receiveData.length);
     while (isRunning) {
       try {
+        // Restore full buffer length, as receive() shrinks it to the received size
+        receivePacket.setLength(receiveData.length);
         datagramSocket.receive(receivePacket);
         final SsdpService ssdpService = new SsdpService(SsdpResponse.from(receivePacket));
-        if (ssdpService.getType() == SsdpResponse.Type.DISCOVERY_RESPONSE) {
-          // Handle cache
-          final Optional<SsdpService> existing;
-          synchronized (ssdpServices) {
-            existing = ssdpServices.stream().filter(ssdpService::equals).findFirst();
-          }
-          if (existing.isEmpty()) {
-            ssdpServices.add(ssdpService);
+        // Listener is called outside the cache lock
+        switch (updateCache(ssdpService)) {
+          case DISCOVERED:
             listener.onServiceDiscovered(ssdpService);
-          } else {
-            final boolean wasExpired = existing.get().isExpired();
-            // Always refresh expiry on re-discovery
-            ssdpServices.remove(ssdpService);
-            ssdpServices.add(ssdpService);
-            if (wasExpired) {
-              listener.onServiceDiscovered(ssdpService);
-            }
-          }
-        } else {
-          // Sync cache on ssdp:byebye / ssdp:alive announcements
-          final SsdpService.Status status = ssdpService.getStatus();
-          if (status == SsdpService.Status.ALIVE) {
-            if (ssdpServices.contains(ssdpService)) {
-              ssdpServices.remove(ssdpService);
-              ssdpServices.add(ssdpService);
-              listener.onServiceAnnouncement(ssdpService);
-            } else {
-              ssdpServices.add(ssdpService);
-              listener.onServiceDiscovered(ssdpService);
-            }
-          } else {
-            if (status == SsdpService.Status.BYEBYE) {
-              ssdpServices.remove(ssdpService);
-            }
+            break;
+          case ANNOUNCED:
             listener.onServiceAnnouncement(ssdpService);
-          }
+            break;
+          default:
         }
       } catch (IllegalArgumentException illegalArgumentException) {
         Log.d(LOG_TAG, "receive: unable to parse response");
@@ -231,6 +216,32 @@ public class SsdpClient {
       }
     }
     Log.d(LOG_TAG, "receive: exit");
+  }
+
+  // Atomic check-then-act on cache, both receive threads may handle the same service
+  @NonNull
+  private CacheEvent updateCache(@NonNull SsdpService ssdpService) {
+    synchronized (ssdpServices) {
+      if (ssdpService.getType() == SsdpResponse.Type.DISCOVERY_RESPONSE) {
+        // Optional.isEmpty() requires API 33
+        final SsdpService existing = ssdpServices.stream().filter(ssdpService::equals).findFirst().orElse(null);
+        // Always refresh expiry on re-discovery
+        ssdpServices.remove(ssdpService);
+        ssdpServices.add(ssdpService);
+        return ((existing == null) || existing.isExpired()) ? CacheEvent.DISCOVERED : CacheEvent.NONE;
+      }
+      // Sync cache on ssdp:byebye / ssdp:alive announcements
+      final SsdpService.Status status = ssdpService.getStatus();
+      if (status == SsdpService.Status.ALIVE) {
+        final boolean isKnown = ssdpServices.remove(ssdpService);
+        ssdpServices.add(ssdpService);
+        return isKnown ? CacheEvent.ANNOUNCED : CacheEvent.DISCOVERED;
+      }
+      if (status == SsdpService.Status.BYEBYE) {
+        ssdpServices.remove(ssdpService);
+      }
+      return CacheEvent.ANNOUNCED;
+    }
   }
 
   // Close sockets and stop expiry scheduler without triggering any listener callback
@@ -256,6 +267,10 @@ public class SsdpClient {
       }
       listenSocket.close();
     }
+  }
+
+  private enum CacheEvent {
+    NONE, DISCOVERED, ANNOUNCED
   }
 
   public interface Listener {

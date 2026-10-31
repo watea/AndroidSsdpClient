@@ -31,7 +31,7 @@ import java.util.Map;
 import java.util.Objects;
 
 @SuppressWarnings("unused")
-public class SsdpService {
+public final class SsdpService {
   @Nullable
   private final String serialNumber;
   @Nullable
@@ -45,7 +45,7 @@ public class SsdpService {
   @NonNull
   private final SsdpResponse originalResponse;
 
-  public SsdpService(@NonNull SsdpResponse response) {
+  SsdpService(@NonNull SsdpResponse response) {
     final Map<String, String> headers = response.getHeaders();
     this.serialNumber = headers.get("USN");
     this.serviceType = headers.get((response.getType() == SsdpResponse.Type.DISCOVERY_RESPONSE) ? "ST" : "NT");
@@ -70,12 +70,6 @@ public class SsdpService {
     this.status = status;
     this.remoteIp = remoteIp;
     this.originalResponse = originalResponse;
-  }
-
-  // Returns a synthetic copy of this service with EXPIRED status
-  @NonNull
-  public SsdpService asExpired() {
-    return new SsdpService(serialNumber, serviceType, location, Status.EXPIRED, remoteIp, originalResponse);
   }
 
   @Nullable
@@ -144,12 +138,18 @@ public class SsdpService {
     return status;
   }
 
+  // Returns a synthetic copy of this service with EXPIRED status
+  @NonNull
+  SsdpService asExpired() {
+    return new SsdpService(serialNumber, serviceType, location, Status.EXPIRED, remoteIp, originalResponse);
+  }
+
   public enum Status {
     NONE, ALIVE, BYEBYE, UPDATE, EXPIRED;
 
     // Parse NTS or ST header into a Status
     @NonNull
-    public static Status parse(@Nullable String nts) {
+    static Status parse(@Nullable String nts) {
       if ("ssdp:alive".equals(nts)) {
         return ALIVE;
       }

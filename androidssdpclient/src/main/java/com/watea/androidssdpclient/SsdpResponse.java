@@ -35,6 +35,7 @@ import java.net.InetAddress;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.List;
@@ -44,7 +45,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 @SuppressWarnings("unused")
-public class SsdpResponse {
+public final class SsdpResponse {
   private static final String LOG_TAG = SsdpResponse.class.getSimpleName();
   private static final String S_CRLF = "\r\n";
   private static final byte[] DOUBLE_CRLF = (S_CRLF + S_CRLF).getBytes(UTF_8);
@@ -67,27 +68,28 @@ public class SsdpResponse {
   @NonNull
   private final Type type;
 
-  public SsdpResponse(
+  SsdpResponse(
     @NonNull Type type,
     @NonNull Map<String, String> headers,
     @Nullable byte[] body,
     long expiry,
     @NonNull InetAddress originAddress) {
     this.type = type;
-    this.headers = headers;
+    this.headers = Collections.unmodifiableMap(new HashMap<>(headers));
     this.body = body;
     this.expiry = expiry;
     this.originAddress = originAddress;
   }
 
   @NonNull
-  public static SsdpResponse from(@NonNull DatagramPacket datagramPacket) throws IllegalArgumentException {
+  static SsdpResponse from(@NonNull DatagramPacket datagramPacket) throws IllegalArgumentException {
     final byte[] data = datagramPacket.getData();
-    int endOfHeaders = findEndOfHeaders(data);
+    // Search bounded by packet length: buffer may hold stale bytes from a previous, longer packet
+    int endOfHeaders = findEndOfHeaders(data, datagramPacket.getLength());
     if (endOfHeaders == -1) {
       endOfHeaders = datagramPacket.getLength();
     }
-    final List<String> headerLines = Arrays.asList(new String(Arrays.copyOfRange(data, 0, endOfHeaders)).split(S_CRLF));
+    final List<String> headerLines = Arrays.asList(new String(data, 0, endOfHeaders, UTF_8).split(S_CRLF));
     final String firstLine = headerLines.get(0);
     final Type type =
       SEARCH_REQUEST_LINE_PATTERN.matcher(firstLine).matches() ?
@@ -103,7 +105,7 @@ public class SsdpResponse {
       final String key = matcher.group(1);
       final String value = matcher.group(2);
       if ((key != null) && (value != null)) {
-        headers.put(key.toUpperCase().trim(), value.trim());
+        headers.put(key.toUpperCase(Locale.ROOT).trim(), value.trim());
       }
     });
     final long expiry = parseCacheHeader(headers);
@@ -136,11 +138,15 @@ public class SsdpResponse {
     return 0;
   }
 
-  private static int findEndOfHeaders(@NonNull byte[] data) {
-    for (int i = 0; i <= data.length - DOUBLE_CRLF.length; i++) {
-      if (Arrays.equals(DOUBLE_CRLF, Arrays.copyOfRange(data, i, i + DOUBLE_CRLF.length))) {
-        return i;
+  private static int findEndOfHeaders(@NonNull byte[] data, int length) {
+      outer:
+    for (int i = 0; i <= length - DOUBLE_CRLF.length; i++) {
+      for (int j = 0; j < DOUBLE_CRLF.length; j++) {
+        if (data[i + j] != DOUBLE_CRLF[j]) {
+          continue outer;
+        }
       }
+      return i;
     }
     return -1;
   }
@@ -152,12 +158,13 @@ public class SsdpResponse {
 
   @Nullable
   public byte[] getBody() {
-    return body;
+    return (body == null) ? null : body.clone();
   }
 
+  // Unmodifiable view
   @NonNull
   public Map<String, String> getHeaders() {
-    return new HashMap<>(headers);
+    return headers;
   }
 
   @NonNull
@@ -177,7 +184,7 @@ public class SsdpResponse {
   @Override
   public String toString() {
     return "SsdpResponse{" +
-      ", headers=" + headers +
+      "headers=" + headers +
       ", body=" + Arrays.toString(body) +
       '}';
   }
